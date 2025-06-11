@@ -1,38 +1,71 @@
+use clap::{Parser, Subcommand};
 use std::env;
-use std::env::Args;
-use std::iter::Skip;
+
+#[derive(Parser)]
+#[command(version, about, long_about = None)]
+struct Cli {
+    /// Turn debugging information on
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    verbose: u8,
+
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Print the current PATH one directory per line
+    Print,
+    /// Build a new PATH from directories
+    New { directories: Vec<String> },
+    /// Add directories to front of PATH
+    Add { directories: Vec<String> },
+    /// Add directories to back of PATH
+    Append { directories: Vec<String> },
+}
 
 fn main() {
+    let cli = Cli::parse();
     let current = parse_path(&(env::var("PATH").unwrap_or_default()));
-    let args = env::args().skip(1);
-    if args.len() == 0 {
-        print_path(&current)
-    } else {
-        edit_path(&current, args);
+    match cli.command {
+        Commands::Print => exec_print(&current),
+        Commands::New { directories } => exec_new(&directories),
+        Commands::Add { directories } => exec_add(&current, &directories),
+        Commands::Append { directories } => exec_append(&current, &directories),
     }
 }
 
-fn print_path(current: &Vec<String>) {
+fn exec_print(current: &[String]) {
     for dir in current {
         println!("{}", dir);
     }
 }
 
-fn edit_path(current: &[String], args: Skip<Args>) {
-    let mut inserted = false;
+fn exec_new(directories: &[String]) {
     let mut path = Vec::new();
-    for arg in args {
-        if arg == "PATH" {
-            if !inserted {
-                add_all(&mut path, current);
-                inserted = true;
-            }
-        } else {
-            add_last(&mut path, &arg)
-        }
+    for arg in directories {
+        let parsed = parse_path(arg);
+        add_all_last(&mut path, &parsed);
     }
-    if !inserted {
-        add_all(&mut path, current);
+    println!("{}", to_string(&path));
+}
+
+fn exec_add(current: &[String], directories: &[String]) {
+    let mut path = Vec::new();
+    for arg in directories {
+        let parsed = parse_path(arg);
+        add_all_last(&mut path, &parsed);
+    }
+    add_all_unique(&mut path, current);
+    println!("{}", to_string(&path));
+}
+
+fn exec_append(current: &[String], directories: &[String]) {
+    let mut path = Vec::new();
+    add_all_unique(&mut path, current);
+    for arg in directories {
+        let parsed = parse_path(arg);
+        add_all_last(&mut path, &parsed);
     }
     println!("{}", to_string(&path));
 }
@@ -52,7 +85,13 @@ fn add_last(path: &mut Vec<String>, dir: &str) {
     path.push(dir.to_string());
 }
 
-fn add_all(path: &mut Vec<String>, other: &[String]) {
+fn add_all_last(path: &mut Vec<String>, other: &[String]) {
+    for dir in other.iter() {
+        add_last(path, dir);
+    }
+}
+
+fn add_all_unique(path: &mut Vec<String>, other: &[String]) {
     for dir in other.iter() {
         add_unique(path, dir);
     }
