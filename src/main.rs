@@ -1,14 +1,30 @@
 use std::env;
+use std::env::Args;
+use std::iter::Skip;
 
 fn main() {
     let current = parse_path(&(env::var("PATH").unwrap_or_default()));
+    let args = env::args().skip(1);
+    if args.len() == 0 {
+        print_path(&current)
+    } else {
+        edit_path(&current, args);
+    }
+}
+
+fn print_path(current: &Vec<String>) {
+    for dir in current {
+        println!("{}", dir);
+    }
+}
+
+fn edit_path(current: &[String], args: Skip<Args>) {
     let mut inserted = false;
     let mut path = Vec::new();
-    let args = env::args().skip(1);
     for arg in args {
         if arg == "PATH" {
             if !inserted {
-                add_all(&mut path, &current);
+                add_all(&mut path, current);
                 inserted = true;
             }
         } else {
@@ -16,7 +32,7 @@ fn main() {
         }
     }
     if !inserted {
-        add_all(&mut path, &current);
+        add_all(&mut path, current);
     }
     println!("{}", to_string(&path));
 }
