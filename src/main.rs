@@ -35,7 +35,7 @@ enum Commands {
 
 fn main() {
     let cli = Cli::parse();
-    let current = parse_path(&(env::var("PATH").unwrap_or_default()));
+    let current = parse_path(&(env::var(cli.env).unwrap_or_default()));
     let mut path = match cli.command {
         Commands::Print => exec_print(&current),
         Commands::New { directories } => exec_new(&directories),
