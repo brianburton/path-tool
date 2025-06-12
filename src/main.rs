@@ -1,12 +1,21 @@
 use clap::{Parser, Subcommand};
-use std::env;
+use std::path::Path;
+use std::{env, fs};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
-    /// Turn debugging information on
-    #[arg(short, long, action = clap::ArgAction::Count)]
-    verbose: u8,
+    /// Name of path environment variable
+    #[arg(short, long, default_value = "PATH")]
+    env: String,
+
+    /// Filter non-directories from path
+    #[arg(short, long, default_value_t = false)]
+    filter: bool,
+
+    /// Normalize directory names in path
+    #[arg(short, long, default_value_t = false)]
+    normalize: bool,
 
     #[command(subcommand)]
     command: Commands,
@@ -27,47 +36,57 @@ enum Commands {
 fn main() {
     let cli = Cli::parse();
     let current = parse_path(&(env::var("PATH").unwrap_or_default()));
-    match cli.command {
+    let mut path = match cli.command {
         Commands::Print => exec_print(&current),
         Commands::New { directories } => exec_new(&directories),
         Commands::Add { directories } => exec_add(&current, &directories),
         Commands::Append { directories } => exec_append(&current, &directories),
+    };
+    if cli.filter {
+        filter(&mut path);
+    }
+    if cli.normalize {
+        normalize(&mut path);
+    }
+    if !path.is_empty() {
+        println!("{}", to_string(&path));
     }
 }
 
-fn exec_print(current: &[String]) {
+fn exec_print(current: &[String]) -> Vec<String> {
     for dir in current {
         println!("{}", dir);
     }
+    vec![]
 }
 
-fn exec_new(directories: &[String]) {
+fn exec_new(directories: &[String]) -> Vec<String> {
     let mut path = Vec::new();
     for arg in directories {
         let parsed = parse_path(arg);
         add_all_last(&mut path, &parsed);
     }
-    println!("{}", to_string(&path));
+    path
 }
 
-fn exec_add(current: &[String], directories: &[String]) {
+fn exec_add(current: &[String], directories: &[String]) -> Vec<String> {
     let mut path = Vec::new();
     for arg in directories {
         let parsed = parse_path(arg);
         add_all_last(&mut path, &parsed);
     }
     add_all_unique(&mut path, current);
-    println!("{}", to_string(&path));
+    path
 }
 
-fn exec_append(current: &[String], directories: &[String]) {
+fn exec_append(current: &[String], directories: &[String]) -> Vec<String> {
     let mut path = Vec::new();
     add_all_unique(&mut path, current);
     for arg in directories {
         let parsed = parse_path(arg);
         add_all_last(&mut path, &parsed);
     }
-    println!("{}", to_string(&path));
+    path
 }
 
 fn remove(path: &mut Vec<String>, dir: &str) {
@@ -76,6 +95,28 @@ fn remove(path: &mut Vec<String>, dir: &str) {
         i -= 1;
         if path[i] == dir {
             path.remove(i);
+        }
+    }
+}
+
+fn filter(path: &mut Vec<String>) {
+    let mut i = path.len();
+    while i > 0 {
+        i -= 1;
+        if is_invalid(&path[i]).unwrap_or(false) {
+            path.remove(i);
+        }
+    }
+}
+
+fn normalize(path: &mut [String]) {
+    for p in path.iter_mut() {
+        if let Some(s) = expand(p.as_str()) {
+            if let Ok(d) = fs::canonicalize(s.as_str()) {
+                if let Some(c) = d.to_str() {
+                    *p = String::from(c);
+                }
+            }
         }
     }
 }
@@ -126,4 +167,26 @@ fn parse_path(source: &str) -> Vec<String> {
 
 fn to_string(path: &[String]) -> String {
     path.join(":")
+}
+
+fn is_invalid(path: &str) -> Option<bool> {
+    let d = fs::metadata(Path::new(&path)).ok()?;
+    if d.is_symlink() {
+        let link_path = fs::read_link(path).ok()?;
+        return is_invalid(link_path.to_str()?);
+    }
+    Some(d.is_dir())
+}
+
+fn expand(path: &str) -> Option<String> {
+    let d = fs::metadata(Path::new(&path)).ok()?;
+    if d.is_symlink() {
+        let link_path = fs::read_link(path).ok()?;
+        return expand(link_path.to_str()?);
+    }
+    if d.is_dir() {
+        Some(path.to_string())
+    } else {
+        None
+    }
 }
