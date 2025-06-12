@@ -1,4 +1,6 @@
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use std::collections::HashSet;
 use std::path::Path;
 use std::{env, fs};
 
@@ -37,41 +39,36 @@ fn main() {
     let cli = Cli::parse();
     let current = parse_path(&(env::var(cli.env).unwrap_or_default()));
     let mut path = match cli.command {
-        Commands::Print => exec_print(&current),
-        Commands::New { directories } => exec_new(&directories),
-        Commands::Add { directories } => exec_add(&current, &directories),
-        Commands::Append { directories } => exec_append(&current, &directories),
+        Commands::Print => exec_print(apply_filters(current, cli.filter, cli.normalize)),
+        Commands::New { directories } => exec_new(directories),
+        Commands::Add { directories } => exec_add(&current, directories),
+        Commands::Append { directories } => exec_append(&current, directories),
     };
-    if cli.filter {
-        filter(&mut path);
-    }
-    if cli.normalize {
-        normalize(&mut path);
-    }
+    path = apply_filters(path, cli.filter, cli.normalize);
     if !path.is_empty() {
         println!("{}", to_string(&path));
     }
 }
 
-fn exec_print(current: &[String]) -> Vec<String> {
+fn exec_print(current: Vec<String>) -> Vec<String> {
     for dir in current {
         println!("{}", dir);
     }
     vec![]
 }
 
-fn exec_new(directories: &[String]) -> Vec<String> {
+fn exec_new(directories: Vec<String>) -> Vec<String> {
     let mut path = Vec::new();
-    for arg in directories {
+    for arg in directories.iter() {
         let parsed = parse_path(arg);
         add_all_last(&mut path, &parsed);
     }
     path
 }
 
-fn exec_add(current: &[String], directories: &[String]) -> Vec<String> {
+fn exec_add(current: &[String], directories: Vec<String>) -> Vec<String> {
     let mut path = Vec::new();
-    for arg in directories {
+    for arg in directories.iter() {
         let parsed = parse_path(arg);
         add_all_last(&mut path, &parsed);
     }
@@ -79,10 +76,10 @@ fn exec_add(current: &[String], directories: &[String]) -> Vec<String> {
     path
 }
 
-fn exec_append(current: &[String], directories: &[String]) -> Vec<String> {
+fn exec_append(current: &[String], directories: Vec<String>) -> Vec<String> {
     let mut path = Vec::new();
     add_all_unique(&mut path, current);
-    for arg in directories {
+    for arg in directories.iter() {
         let parsed = parse_path(arg);
         add_all_last(&mut path, &parsed);
     }
@@ -99,26 +96,41 @@ fn remove(path: &mut Vec<String>, dir: &str) {
     }
 }
 
-fn filter(path: &mut Vec<String>) {
-    let mut i = path.len();
-    while i > 0 {
-        i -= 1;
-        if is_invalid(&path[i]).unwrap_or(false) {
-            path.remove(i);
-        }
+fn apply_filters(
+    path: Vec<String>,
+    filter_requested: bool,
+    normalize_requested: bool,
+) -> Vec<String> {
+    if filter_requested {
+        filter(path)
+    } else if normalize_requested {
+        normalize(path)
+    } else {
+        path
     }
 }
 
-fn normalize(path: &mut [String]) {
-    for p in path.iter_mut() {
-        if let Some(s) = expand(p.as_str()) {
-            if let Ok(d) = fs::canonicalize(s.as_str()) {
-                if let Some(c) = d.to_str() {
-                    *p = String::from(c);
-                }
+fn filter(path: Vec<String>) -> Vec<String> {
+    let mut new_path = Vec::new();
+    for dir in path.iter() {
+        if let Ok(true) = is_valid(dir) {
+            new_path.push(dir.to_string());
+        }
+    }
+    new_path
+}
+
+fn normalize(path: Vec<String>) -> Vec<String> {
+    let mut uniques = HashSet::new();
+    let mut new_path = Vec::new();
+    for dir in path.iter() {
+        if let Ok(Some(canonical)) = canonicalize(dir) {
+            if uniques.insert(canonical.to_string()) {
+                new_path.push(canonical);
             }
         }
     }
+    new_path
 }
 
 fn add_last(path: &mut Vec<String>, dir: &str) {
@@ -169,24 +181,23 @@ fn to_string(path: &[String]) -> String {
     path.join(":")
 }
 
-fn is_invalid(path: &str) -> Option<bool> {
-    let d = fs::metadata(Path::new(&path)).ok()?;
-    if d.is_symlink() {
-        let link_path = fs::read_link(path).ok()?;
-        return is_invalid(link_path.to_str()?);
+fn is_valid(path: &str) -> Result<bool> {
+    if !Path::new(path).exists() {
+        Ok(false)
+    } else {
+        fs::metadata(Path::new(path))
+            .map(|d| d.is_dir())
+            .context("unable to read metadata")
     }
-    Some(d.is_dir())
 }
 
-fn expand(path: &str) -> Option<String> {
-    let d = fs::metadata(Path::new(&path)).ok()?;
-    if d.is_symlink() {
-        let link_path = fs::read_link(path).ok()?;
-        return expand(link_path.to_str()?);
-    }
-    if d.is_dir() {
-        Some(path.to_string())
+fn canonicalize(path: &str) -> Result<Option<String>> {
+    if !fs::metadata(Path::new(path))?.is_dir() {
+        Ok(None)
     } else {
-        None
+        let canonical = fs::canonicalize(Path::new(path))?;
+        let canonical = canonical.to_str().map(String::from);
+        let canonical = canonical.or_else(|| Some(path.to_string()));
+        Ok(canonical)
     }
 }
