@@ -2,7 +2,7 @@
 
 Have you ever wanted to view a long PATH or CLASSPATH in a readable form
 to diagnose a problem?  Or wanted to optimize the PATH by removing duplicates
-non-existent directories?  If so you might find this program useful.
+and non-existent directories?  If so you might find this program useful.
 
 To view your PATH in a readable form use the `print` command.
 
@@ -25,20 +25,27 @@ $ path-tool add /usr/local/bin
 /usr/local/bin:/bin:/sbin:/usr/bin:/Users/brian/.cargo/bin
 ```
 
-To add to the end of the PATH use the `append` command.
+To add to the back of the PATH use the `append` command.
 
 ```shell
 $ path-tool append /usr/local/bin
 /bin:/sbin:/usr/bin:/Users/brian/.cargo/bin:/usr/local/bin
 ```
 
+## Filtering Options
+
 The `--filter` option removes any non-existent directories from your PATH.
-The `--normalize` option does the same as `--filter` but also replaces any symbolic links
-with the directory they point to.
+The `--normalize` option does the same as `--filter` but also replaces any 
+symbolic links with the directory they point to.
 
 ## Installation
 
-Sorry, but you'll need to clone this repo and install from source.
+Clone this repo and install from source.
+If you have cargo installed the easy way is with the install command.
+
+```shell
+cargo install --path .
+```
 
 ## Usage
 
