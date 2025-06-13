@@ -15,6 +15,10 @@ struct Cli {
     #[arg(short, long, default_value_t = false)]
     filter: bool,
 
+    /// Print path one directory per line
+    #[arg(short, long, default_value_t = false)]
+    pretty: bool,
+
     /// Normalize directory names in path
     #[arg(short, long, default_value_t = false)]
     normalize: bool,
@@ -23,7 +27,7 @@ struct Cli {
     command: Commands,
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, PartialEq)]
 enum Commands {
     /// Print the current PATH one directory per line
     Print,
@@ -38,23 +42,25 @@ enum Commands {
 fn main() {
     let cli = Cli::parse();
     let current = parse_path(&(env::var(cli.env).unwrap_or_default()));
+    let pretty = cli.pretty || cli.command == Commands::Print;
     let mut path = match cli.command {
-        Commands::Print => exec_print(apply_filters(current, cli.filter, cli.normalize)),
+        Commands::Print => current,
         Commands::New { directories } => exec_new(directories),
         Commands::Add { directories } => exec_add(&current, directories),
         Commands::Append { directories } => exec_append(&current, directories),
     };
     path = apply_filters(path, cli.filter, cli.normalize);
-    if !path.is_empty() {
+    if pretty {
+        exec_print(path);
+    } else {
         println!("{}", to_string(&path));
     }
 }
 
-fn exec_print(current: Vec<String>) -> Vec<String> {
+fn exec_print(current: Vec<String>) {
     for dir in current {
         println!("{}", dir);
     }
-    vec![]
 }
 
 fn exec_new(directories: Vec<String>) -> Vec<String> {
