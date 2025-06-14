@@ -17,6 +17,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use itertools::Itertools;
+use std::io::{Write, stdout};
 use std::path::Path;
 use std::{env, fs};
 
@@ -55,8 +56,11 @@ enum Commands {
     Append { directories: Vec<String> },
 }
 
-fn main() {
-    let cli = Cli::parse();
+fn main() -> Result<()> {
+    main_logic(Cli::parse(), &mut stdout())
+}
+
+fn main_logic(cli: Cli, output: &mut impl Write) -> Result<()> {
     let current = parse_path(&(env::var(cli.env).unwrap_or_default()));
     let pretty = cli.pretty || cli.command == Commands::Print;
     let mut path = match cli.command {
@@ -67,16 +71,17 @@ fn main() {
     };
     path = apply_filters(path, cli.filter, cli.normalize);
     if pretty {
-        exec_print(path);
+        exec_print(path, output)
     } else {
-        println!("{}", to_string(&path));
+        writeln!(output, "{}", to_string(&path)).with_context(|| "Failed to write output")
     }
 }
 
-fn exec_print(current: Vec<String>) {
+fn exec_print(current: Vec<String>, output: &mut impl Write) -> Result<()> {
     for dir in current {
-        println!("{}", dir);
+        writeln!(output, "{}", dir).with_context(|| format!("Failed to print {}", dir))?;
     }
+    Ok(())
 }
 
 fn exec_new(directories: Vec<String>) -> Vec<String> {
@@ -426,4 +431,7 @@ mod tests {
             vec!["/foo", "/bar", "/baz"]
         );
     }
+
+    #[test]
+    fn test_print() {}
 }
