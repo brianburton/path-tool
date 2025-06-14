@@ -21,7 +21,7 @@ use std::io::{Write, stdout};
 use std::path::Path;
 use std::{env, fs};
 
-#[derive(Parser)]
+#[derive(Parser, Default, Clone)]
 #[command(version, about, long_about = None)]
 struct Cli {
     /// Name of path environment variable
@@ -44,9 +44,10 @@ struct Cli {
     command: Commands,
 }
 
-#[derive(Subcommand, Debug, PartialEq)]
+#[derive(Subcommand, Debug, PartialEq, Default, Clone)]
 enum Commands {
     /// Print the current PATH one directory per line
+    #[default]
     Print,
     /// Build a new PATH from directories
     New { directories: Vec<String> },
@@ -220,6 +221,7 @@ fn canonicalize(path: &str) -> Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env::set_var;
 
     const TEST_ROOT: &str = "test_dirs";
 
@@ -231,11 +233,7 @@ mod tests {
         format!("{:?}", e)
     }
 
-    // Determines the canonical path of TEST_ROOT and then removes
-    // it from the start of the given directory path.
-    // Intended for use in a test so makes assumptions about
-    // unwrap being safe.
-    fn rm_prefix(path: String) -> String {
+    fn normal_dir(s: &str) -> String {
         let mut prefix = fs::canonicalize(Path::new(TEST_ROOT))
             .unwrap()
             .to_str()
@@ -243,6 +241,16 @@ mod tests {
             .to_string();
         assert!(prefix.len() > 0);
         prefix += "/";
+        prefix += s;
+        prefix
+    }
+
+    // Determines the canonical path of TEST_ROOT and then removes
+    // it from the start of the given directory path.
+    // Intended for use in a test so makes assumptions about
+    // unwrap being safe.
+    fn rm_prefix(path: String) -> String {
+        let prefix = normal_dir("");
         assert!(
             path.starts_with(prefix.as_str()),
             "path did not start with {}: {}",
@@ -433,5 +441,201 @@ mod tests {
     }
 
     #[test]
-    fn test_print() {}
+    fn test_print() {
+        let env_var = "TEST_PATH_PRINT".to_string();
+        let base_cli = Cli {
+            env: env_var.to_owned(),
+            command: Commands::Print,
+            ..Cli::default()
+        };
+        let path = vec![dir("b"), dir("c"), dir("z")].join(":");
+        let cli = base_cli.clone();
+        unsafe {
+            set_var(env_var.to_owned(), path);
+        }
+        let mut buf = Vec::new();
+        main_logic(cli, &mut buf).unwrap();
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            format!("{}\n{}\n{}\n", dir("b"), dir("c"), dir("z"))
+        );
+
+        let cli = Cli {
+            filter: true,
+            ..base_cli.clone()
+        };
+        let mut buf = Vec::new();
+        main_logic(cli, &mut buf).unwrap();
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            format!("{}\n{}\n", dir("b"), dir("c"))
+        );
+
+        let cli = Cli {
+            normalize: true,
+            ..base_cli.clone()
+        };
+        let mut buf = Vec::new();
+        main_logic(cli, &mut buf).unwrap();
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            format!("{}\n{}\n", normal_dir("b"), normal_dir("c"))
+        );
+    }
+
+    #[test]
+    fn test_new() {
+        let env_var = "TEST_PATH_NEW".to_string();
+        let base_cli = Cli {
+            env: env_var.to_owned(),
+            command: Commands::New {
+                directories: vec![
+                    dir("la"),
+                    dir("b"),
+                    dir("a"),
+                    dir("c"),
+                    dir("z"),
+                    dir("x"),
+                    dir("b/bb"),
+                ],
+            },
+            ..Cli::default()
+        };
+        let cli = base_cli.clone();
+        let mut buf = Vec::new();
+        main_logic(cli, &mut buf).unwrap();
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            vec![
+                dir("la"),
+                dir("b"),
+                dir("a"),
+                dir("c"),
+                dir("z"),
+                dir("x"),
+                dir("b/bb")
+            ]
+            .join(":")
+                + "\n"
+        );
+
+        let cli = Cli {
+            filter: true,
+            ..base_cli.clone()
+        };
+        let mut buf = Vec::new();
+        main_logic(cli, &mut buf).unwrap();
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            vec![dir("la"), dir("b"), dir("a"), dir("c"), dir("b/bb")].join(":") + "\n"
+        );
+
+        let cli = Cli {
+            normalize: true,
+            ..base_cli.clone()
+        };
+        let mut buf = Vec::new();
+        main_logic(cli, &mut buf).unwrap();
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            vec![
+                normal_dir("a"),
+                normal_dir("b"),
+                normal_dir("c"),
+                normal_dir("b/bb")
+            ]
+            .join(":")
+                + "\n"
+        );
+    }
+
+    #[test]
+    fn test_add() {
+        let env_var = "TEST_PATH_ADD".to_string();
+        let base_cli = Cli {
+            env: env_var.to_owned(),
+            command: Commands::Add {
+                directories: vec![dir("la"), dir("x")],
+            },
+            ..Cli::default()
+        };
+        let path = vec![dir("b"), dir("a"), dir("c"), dir("z")].join(":");
+        let cli = base_cli.clone();
+        unsafe {
+            set_var(env_var.to_owned(), path);
+        }
+        let mut buf = Vec::new();
+        main_logic(cli, &mut buf).unwrap();
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            vec![dir("la"), dir("x"), dir("b"), dir("a"), dir("c"), dir("z")].join(":") + "\n"
+        );
+
+        let cli = Cli {
+            filter: true,
+            ..base_cli.clone()
+        };
+        let mut buf = Vec::new();
+        main_logic(cli, &mut buf).unwrap();
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            vec![dir("la"), dir("b"), dir("a"), dir("c")].join(":") + "\n"
+        );
+
+        let cli = Cli {
+            normalize: true,
+            ..base_cli.clone()
+        };
+        let mut buf = Vec::new();
+        main_logic(cli, &mut buf).unwrap();
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            vec![normal_dir("a"), normal_dir("b"), normal_dir("c")].join(":") + "\n"
+        );
+    }
+
+    #[test]
+    fn test_append() {
+        let env_var = "TEST_PATH_APPEND".to_string();
+        let base_cli = Cli {
+            env: env_var.to_owned(),
+            command: Commands::Append {
+                directories: vec![dir("la"), dir("x")],
+            },
+            ..Cli::default()
+        };
+        let path = vec![dir("b"), dir("a"), dir("c"), dir("z")].join(":");
+        let cli = base_cli.clone();
+        unsafe {
+            set_var(env_var.to_owned(), path);
+        }
+        let mut buf = Vec::new();
+        main_logic(cli, &mut buf).unwrap();
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            vec![dir("b"), dir("a"), dir("c"), dir("z"), dir("la"), dir("x")].join(":") + "\n"
+        );
+
+        let cli = Cli {
+            filter: true,
+            ..base_cli.clone()
+        };
+        let mut buf = Vec::new();
+        main_logic(cli, &mut buf).unwrap();
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            vec![dir("b"), dir("a"), dir("c"), dir("la")].join(":") + "\n"
+        );
+
+        let cli = Cli {
+            normalize: true,
+            ..base_cli.clone()
+        };
+        let mut buf = Vec::new();
+        main_logic(cli, &mut buf).unwrap();
+        assert_eq!(
+            String::from_utf8(buf).unwrap(),
+            vec![normal_dir("b"), normal_dir("a"), normal_dir("c")].join(":") + "\n"
+        );
+    }
 }
