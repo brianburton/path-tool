@@ -1,0 +1,1 @@
+This file ensures its directory is stored in git.

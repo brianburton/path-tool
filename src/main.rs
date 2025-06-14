@@ -16,7 +16,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use std::collections::HashSet;
+use itertools::Itertools;
 use std::path::Path;
 use std::{env, fs};
 
@@ -109,13 +109,7 @@ fn exec_append(current: &[String], directories: Vec<String>) -> Vec<String> {
 }
 
 fn remove(path: &mut Vec<String>, dir: &str) {
-    let mut i = path.len();
-    while i > 0 {
-        i -= 1;
-        if path[i] == dir {
-            path.remove(i);
-        }
-    }
+    path.retain(|x| x != dir);
 }
 
 fn apply_filters(
@@ -133,26 +127,18 @@ fn apply_filters(
 }
 
 fn filter(path: Vec<String>) -> Vec<String> {
-    let mut new_path = Vec::new();
-    for dir in path.iter() {
-        if let Ok(true) = is_valid(dir) {
-            new_path.push(dir.to_string());
-        }
-    }
-    new_path
+    path.into_iter()
+        .filter(|x| is_valid(x).ok() == Some(true))
+        .unique()
+        .collect::<Vec<String>>()
 }
 
 fn normalize(path: Vec<String>) -> Vec<String> {
-    let mut uniques = HashSet::new();
-    let mut new_path = Vec::new();
-    for dir in path.iter() {
-        if let Ok(Some(canonical)) = canonicalize(dir) {
-            if uniques.insert(canonical.to_string()) {
-                new_path.push(canonical);
-            }
-        }
-    }
-    new_path
+    path.into_iter()
+        .map(|x| canonicalize(&x).unwrap().unwrap_or_default())
+        .filter(|x| !x.is_empty())
+        .unique()
+        .collect::<Vec<String>>()
 }
 
 fn add_last(path: &mut Vec<String>, dir: &str) {
@@ -173,12 +159,14 @@ fn add_all_unique(path: &mut Vec<String>, other: &[String]) {
 }
 
 fn add_unique(path: &mut Vec<String>, dir: &str) {
-    for p in path.iter() {
-        if p == dir {
-            return;
+    if !dir.is_empty() {
+        for p in path.iter() {
+            if p == dir {
+                return;
+            }
         }
+        path.push(dir.to_string());
     }
-    path.push(dir.to_string());
 }
 
 fn parse_path(source: &str) -> Vec<String> {
@@ -214,12 +202,228 @@ fn is_valid(path: &str) -> Result<bool> {
 }
 
 fn canonicalize(path: &str) -> Result<Option<String>> {
-    if !fs::metadata(Path::new(path))?.is_dir() {
+    if !is_valid(path)? {
         Ok(None)
     } else {
         let canonical = fs::canonicalize(Path::new(path))?;
         let canonical = canonical.to_str().map(String::from);
         let canonical = canonical.or_else(|| Some(path.to_string()));
         Ok(canonical)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TEST_ROOT: &str = "test_dirs";
+
+    fn dir(s: &str) -> String {
+        format!("{}/{}", TEST_ROOT, s)
+    }
+
+    fn err_message(e: anyhow::Error) -> String {
+        format!("{:?}", e)
+    }
+
+    // Determines the canonical path of TEST_ROOT and then removes
+    // it from the start of the given directory path.
+    // Intended for use in a test so makes assumptions about
+    // unwrap being safe.
+    fn rm_prefix(path: String) -> String {
+        let mut prefix = fs::canonicalize(Path::new(TEST_ROOT))
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(prefix.len() > 0);
+        prefix += "/";
+        assert!(
+            path.starts_with(prefix.as_str()),
+            "path did not start with {}: {}",
+            prefix,
+            path
+        );
+        path.strip_prefix(prefix.as_str()).unwrap().to_string()
+    }
+
+    // Determines the canonical path of TEST_ROOT and then removes
+    // it from the start of the given directory path.
+    // Intended for use in a test so makes assumptions about
+    // unwrap being safe.
+    fn rm_prefix_opt(dir: Option<String>) -> Option<String> {
+        dir.map(|path| rm_prefix(path))
+    }
+
+    fn strings(strs: &[&str]) -> Vec<String> {
+        strs.iter().map(|s| String::from(*s)).collect()
+    }
+
+    #[test]
+    fn test_remove() {
+        let mut v = strings(&["a", "b", "b"]);
+        let unchanged = v.clone();
+
+        remove(&mut v, "x");
+        assert_eq!(v, unchanged);
+
+        remove(&mut v, "a");
+        assert_eq!(v, strings(&["b", "b"]));
+
+        let mut v = unchanged.clone();
+        remove(&mut v, "b");
+        assert_eq!(v, strings(&["a"]));
+    }
+
+    #[test]
+    fn test_is_valid() {
+        assert_eq!(is_valid(":").map_err(err_message), Ok(false));
+        assert_eq!(is_valid(TEST_ROOT).ok(), Some(true));
+        assert_eq!(is_valid(dir("a").as_str()).ok(), Some(true));
+        assert_eq!(is_valid(dir("b/bb").as_str()).ok(), Some(true));
+        assert_eq!(is_valid(dir("z").as_str()).ok(), Some(false));
+        assert_eq!(is_valid(dir("a/keepme.txt").as_str()).ok(), Some(false));
+        assert_eq!(is_valid(dir("la").as_str()).ok(), Some(true));
+        assert_eq!(is_valid(dir("laa").as_str()).ok(), Some(true));
+        assert_eq!(is_valid(dir("broken").as_str()).ok(), Some(false));
+        assert_eq!(is_valid(dir("broken2").as_str()).ok(), Some(false));
+    }
+
+    #[test]
+    fn test_canonicalize() {
+        assert_eq!(
+            canonicalize(dir("a").as_str())
+                .map_err(err_message)
+                .map(rm_prefix_opt),
+            Ok(Some("a".to_string()))
+        );
+        assert_eq!(
+            canonicalize(dir("b").as_str())
+                .map_err(err_message)
+                .map(rm_prefix_opt),
+            Ok(Some("b".to_string()))
+        );
+        assert_eq!(
+            canonicalize(dir("b/bb").as_str())
+                .map_err(err_message)
+                .map(rm_prefix_opt),
+            Ok(Some("b/bb".to_string()))
+        );
+        assert_eq!(
+            canonicalize(dir("la").as_str())
+                .map_err(err_message)
+                .map(rm_prefix_opt),
+            Ok(Some("a".to_string()))
+        );
+        assert_eq!(
+            canonicalize(dir("laa").as_str())
+                .map_err(err_message)
+                .map(rm_prefix_opt),
+            Ok(Some("a".to_string()))
+        );
+        assert_eq!(
+            canonicalize(dir("broken").as_str()).map_err(err_message),
+            Ok(None)
+        );
+        assert_eq!(
+            canonicalize(dir("broken2").as_str()).map_err(err_message),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn test_filter() {
+        assert_eq!(
+            filter(vec![
+                dir("laa"),
+                dir("b/bb"),
+                dir("c"),
+                dir("broken2"),
+                dir("b/bb"),
+                dir("z"),
+                dir("b")
+            ])
+            .into_iter()
+            .collect::<Vec<String>>(),
+            vec![dir("laa"), dir("b/bb"), dir("c"), dir("b")]
+        );
+    }
+
+    #[test]
+    fn test_normalize() {
+        assert_eq!(
+            normalize(vec![dir("a")])
+                .into_iter()
+                .map(rm_prefix)
+                .collect::<Vec<String>>(),
+            vec!["a".to_string()]
+        );
+
+        // should be unique in the normalized path
+        assert_eq!(
+            normalize(vec![dir("a"), dir("la")])
+                .into_iter()
+                .map(rm_prefix)
+                .collect::<Vec<String>>(),
+            vec!["a".to_string()]
+        );
+        assert_eq!(
+            normalize(vec![dir("laa"), dir("a")])
+                .into_iter()
+                .map(rm_prefix)
+                .collect::<Vec<String>>(),
+            vec!["a".to_string()]
+        );
+
+        assert_eq!(
+            normalize(vec![
+                dir("laa"),
+                dir("b/bb"),
+                dir("c"),
+                dir("broken2"),
+                dir("b/bb"),
+                dir("z"),
+                dir("b")
+            ])
+            .into_iter()
+            .map(rm_prefix)
+            .collect::<Vec<String>>(),
+            vec![
+                "a".to_string(),
+                "b/bb".to_string(),
+                "c".to_string(),
+                "b".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_add_unique() {
+        let mut path: Vec<String> = Vec::new();
+
+        add_unique(&mut path, "");
+        assert_eq!(path, Vec::<String>::new());
+
+        add_unique(&mut path, "a");
+        add_unique(&mut path, "b");
+        add_unique(&mut path, "c");
+        assert_eq!(path, vec!["a", "b", "c"]);
+
+        add_unique(&mut path, "c");
+        add_unique(&mut path, "b");
+        add_unique(&mut path, "a");
+        assert_eq!(path, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn test_parse_path() {
+        assert_eq!(parse_path(""), Vec::<String>::new());
+        assert_eq!(parse_path("::"), Vec::<String>::new());
+        assert_eq!(parse_path(":/foo::/bar:"), vec!["/foo", "/bar"]);
+        assert_eq!(parse_path("/foo:/bar:/baz"), vec!["/foo", "/bar", "/baz"]);
+        assert_eq!(
+            parse_path("/foo:/bar:/foo:/baz:/bar"),
+            vec!["/foo", "/bar", "/baz"]
+        );
     }
 }
