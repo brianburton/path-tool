@@ -17,6 +17,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use itertools::Itertools;
+use std::collections::HashSet;
 use std::io::{Write, stdout};
 use std::path::Path;
 use std::{env, fs};
@@ -58,6 +59,8 @@ enum Commands {
     Add { directories: Vec<String> },
     /// Add directories to back of PATH
     Append { directories: Vec<String> },
+    /// Analyze the current PATH
+    Analyze,
 }
 
 fn main() -> Result<()> {
@@ -65,13 +68,15 @@ fn main() -> Result<()> {
 }
 
 fn main_logic(cli: Cli, output: &mut impl Write) -> Result<()> {
-    let current = parse_path(&(env::var(cli.env).unwrap_or_default()));
+    let current_path_str = env::var(cli.env).unwrap_or_default();
+    let current = parse_path(&current_path_str);
     let pretty = cli.pretty || cli.command == Commands::Print;
     let mut path = match cli.command {
         Commands::Print => current,
         Commands::New { directories } => exec_new(directories),
         Commands::Add { directories } => exec_add(&current, directories),
         Commands::Append { directories } => exec_append(&current, directories),
+        Commands::Analyze => exec_analyze(&current_path_str, output)?,
     };
     path = apply_filters(path, cli.filter, cli.normalize);
     if pretty {
@@ -79,6 +84,31 @@ fn main_logic(cli: Cli, output: &mut impl Write) -> Result<()> {
     } else {
         writeln!(output, "{}", to_string(&path)).with_context(|| "Failed to write output")
     }
+}
+
+fn exec_analyze(path_str: &String, output: &mut impl Write) -> Result<Vec<String>> {
+    let invalids = get_invalid_dirs(&path_str);
+    writeln!(output, "Invalid Directories:")?;
+    if invalids.is_empty() {
+        writeln!(output, "    None")?;
+    } else {
+        for invalid in invalids {
+            writeln!(output, "    {}", invalid)?;
+        }
+    }
+
+    writeln!(output, "")?;
+
+    let duplicates = get_duplicate_dirs(&path_str);
+    writeln!(output, "Duplicate Directories:")?;
+    if duplicates.is_empty() {
+        writeln!(output, "    None")?;
+    } else {
+        for invalid in duplicates {
+            writeln!(output, "    {}", invalid)?;
+        }
+    }
+    Ok(Vec::new())
 }
 
 fn exec_print(current: Vec<String>, output: &mut impl Write) -> Result<()> {
@@ -207,4 +237,20 @@ fn canonicalize(path: &str) -> Result<Option<String>> {
         let canonical = canonical.or_else(|| Some(path.to_string()));
         Ok(canonical)
     }
+}
+
+fn get_invalid_dirs(path_str: &String) -> Vec<String> {
+    let mut dirs = parse_raw_path(&path_str);
+    dirs.retain(|x| !is_valid(x).unwrap_or(false));
+    dirs
+}
+
+fn get_duplicate_dirs(path_str: &String) -> Vec<String> {
+    let mut visited = HashSet::new();
+    parse_raw_path(&path_str)
+        .iter()
+        .map(|d| (d, visited.insert(d)))
+        .filter(|(d, added)| !added)
+        .map(|(d, _)| d.to_string())
+        .collect()
 }
