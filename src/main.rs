@@ -90,19 +90,13 @@ fn exec_print(current: Vec<String>, output: &mut impl Write) -> Result<()> {
 
 fn exec_new(directories: Vec<String>) -> Vec<String> {
     let mut path = Vec::new();
-    for arg in directories.iter() {
-        let parsed = parse_path(arg);
-        add_all_last(&mut path, &parsed);
-    }
+    parse_and_add_all_last(&mut path, directories);
     path
 }
 
 fn exec_add(current: &[String], directories: Vec<String>) -> Vec<String> {
     let mut path = Vec::new();
-    for arg in directories.iter() {
-        let parsed = parse_path(arg);
-        add_all_last(&mut path, &parsed);
-    }
+    parse_and_add_all_last(&mut path, directories);
     add_all_unique(&mut path, current);
     path
 }
@@ -110,10 +104,7 @@ fn exec_add(current: &[String], directories: Vec<String>) -> Vec<String> {
 fn exec_append(current: &[String], directories: Vec<String>) -> Vec<String> {
     let mut path = Vec::new();
     add_all_unique(&mut path, current);
-    for arg in directories.iter() {
-        let parsed = parse_path(arg);
-        add_all_last(&mut path, &parsed);
-    }
+    parse_and_add_all_last(&mut path, directories);
     path
 }
 
@@ -150,30 +141,28 @@ fn normalize(path: Vec<String>) -> Vec<String> {
         .collect::<Vec<String>>()
 }
 
+fn parse_and_add_all_last(path: &mut Vec<String>, directories: Vec<String>) {
+    directories
+        .iter()
+        .map(|arg| parse_path(arg))
+        .for_each(|dirs| add_all_last(path, &dirs));
+}
+
 fn add_last(path: &mut Vec<String>, dir: &str) {
     remove(path, dir);
     path.push(dir.to_string());
 }
 
 fn add_all_last(path: &mut Vec<String>, other: &[String]) {
-    for dir in other.iter() {
-        add_last(path, dir);
-    }
+    other.iter().for_each(|x| add_last(path, x));
 }
 
 fn add_all_unique(path: &mut Vec<String>, other: &[String]) {
-    for dir in other.iter() {
-        add_unique(path, dir);
-    }
+    other.iter().for_each(|x| add_unique(path, x));
 }
 
 fn add_unique(path: &mut Vec<String>, dir: &str) {
-    if !dir.is_empty() {
-        for p in path.iter() {
-            if p == dir {
-                return;
-            }
-        }
+    if !(dir.is_empty() || path.iter().any(|s| s == dir)) {
         path.push(dir.to_string());
     }
 }
