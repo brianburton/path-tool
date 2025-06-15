@@ -17,7 +17,8 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use itertools::Itertools;
-use std::collections::HashSet;
+use regex::Regex;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{Write, stdout};
 use std::path::Path;
 use std::{env, fs};
@@ -86,8 +87,8 @@ fn main_logic(cli: Cli, output: &mut impl Write) -> Result<()> {
     }
 }
 
-fn exec_analyze(path_str: &String, output: &mut impl Write) -> Result<Vec<String>> {
-    let invalids = get_invalid_dirs(&path_str);
+fn exec_analyze(path_str: &str, output: &mut impl Write) -> Result<Vec<String>> {
+    let invalids = get_invalid_dirs(path_str);
     writeln!(output, "Invalid Directories:")?;
     if invalids.is_empty() {
         writeln!(output, "    None")?;
@@ -97,9 +98,9 @@ fn exec_analyze(path_str: &String, output: &mut impl Write) -> Result<Vec<String
         }
     }
 
-    writeln!(output, "")?;
+    writeln!(output)?;
 
-    let duplicates = get_duplicate_dirs(&path_str);
+    let duplicates = get_duplicate_dirs(path_str);
     writeln!(output, "Duplicate Directories:")?;
     if duplicates.is_empty() {
         writeln!(output, "    None")?;
@@ -108,6 +109,22 @@ fn exec_analyze(path_str: &String, output: &mut impl Write) -> Result<Vec<String
             writeln!(output, "    {}", invalid)?;
         }
     }
+
+    writeln!(output)?;
+
+    let shadows = get_shadowed(path_str)?;
+    writeln!(output, "Shadowed Files:")?;
+    if shadows.is_empty() {
+        writeln!(output, "    None")?;
+    } else {
+        for (dir, dir_shadows) in shadows {
+            writeln!(output, "    {}", dir)?;
+            for s in dir_shadows {
+                writeln!(output, "        {}  =>  {}", s.file, s.dir)?;
+            }
+        }
+    }
+
     Ok(Vec::new())
 }
 
@@ -239,18 +256,68 @@ fn canonicalize(path: &str) -> Result<Option<String>> {
     }
 }
 
-fn get_invalid_dirs(path_str: &String) -> Vec<String> {
-    let mut dirs = parse_raw_path(&path_str);
+fn get_invalid_dirs(path_str: &str) -> Vec<String> {
+    let mut dirs = parse_raw_path(path_str);
     dirs.retain(|x| !is_valid(x).unwrap_or(false));
     dirs
 }
 
-fn get_duplicate_dirs(path_str: &String) -> Vec<String> {
+fn get_duplicate_dirs(path_str: &str) -> Vec<String> {
     let mut visited = HashSet::new();
-    parse_raw_path(&path_str)
+    parse_raw_path(path_str)
         .iter()
         .map(|d| (d, visited.insert(d)))
-        .filter(|(d, added)| !added)
+        .filter(|(_, added)| !added)
         .map(|(d, _)| d.to_string())
         .collect()
+}
+
+fn files_in_dir(dir: &str) -> Result<BTreeSet<String>> {
+    let filename_regex = Regex::new("[^/]+$")?;
+    let mut files = BTreeSet::new();
+    for entry in fs::read_dir(Path::new(dir))? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(file_path) = path.to_str() {
+                if let Some(cap) = filename_regex.captures(file_path) {
+                    files.insert(cap[0].to_string());
+                }
+            }
+        }
+    }
+    Ok(files)
+}
+
+#[derive(Debug, Clone)]
+struct Shadow {
+    dir: String,
+    file: String,
+}
+
+impl Shadow {
+    fn new(dir: String, file: String) -> Self {
+        Self { dir, file }
+    }
+}
+
+fn get_shadowed(path_str: &str) -> Result<Vec<(String, Vec<Shadow>)>> {
+    let mut answer = Vec::new();
+    let mut shadows: HashMap<String, Shadow> = HashMap::new();
+    for dir in parse_raw_path(path_str) {
+        let mut shadowed = Vec::new();
+        for file in files_in_dir(dir.as_str())? {
+            match shadows.get(file.as_str()) {
+                Some(shadow) => shadowed.push(shadow.clone()),
+                None => {
+                    let shadow = Shadow::new(dir.to_owned(), file.clone());
+                    shadows.insert(file, shadow);
+                }
+            }
+        }
+        if !shadowed.is_empty() {
+            answer.push((dir, shadowed));
+        }
+    }
+    Ok(answer)
 }
