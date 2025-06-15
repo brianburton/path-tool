@@ -176,21 +176,12 @@ fn add_unique(path: &mut Vec<String>, dir: &str) {
 }
 
 fn parse_path(source: &str) -> Vec<String> {
-    let mut path: Vec<String> = Vec::new();
-    let mut remaining = source;
-    while !remaining.is_empty() {
-        match remaining.find(':') {
-            Some(i) => {
-                add_unique(&mut path, &remaining[..i]);
-                remaining = &remaining[i + 1..];
-            }
-            None => {
-                add_unique(&mut path, remaining);
-                remaining = "";
-            }
-        }
-    }
-    path
+    source
+        .split(":")
+        .filter(|x| !x.is_empty())
+        .map(|x| x.to_string())
+        .unique()
+        .collect()
 }
 
 fn to_string(path: &[String]) -> String {
