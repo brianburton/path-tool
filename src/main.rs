@@ -21,6 +21,9 @@ use std::io::{Write, stdout};
 use std::path::Path;
 use std::{env, fs};
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Parser, Default, Clone)]
 #[command(version, about, long_about = None)]
 struct Cli {
@@ -184,6 +187,14 @@ fn parse_path(source: &str) -> Vec<String> {
         .collect()
 }
 
+fn parse_raw_path(source: &str) -> Vec<String> {
+    source
+        .split(":")
+        .filter(|x| !x.is_empty())
+        .map(|x| x.to_string())
+        .collect()
+}
+
 fn to_string(path: &[String]) -> String {
     path.join(":")
 }
@@ -208,6 +219,3 @@ fn canonicalize(path: &str) -> Result<Option<String>> {
         Ok(canonical)
     }
 }
-
-#[cfg(test)]
-mod tests;

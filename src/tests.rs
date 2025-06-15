@@ -232,6 +232,10 @@ fn test_parse_path() {
         parse_path("/foo:/bar:/foo:/baz:/bar"),
         vec!["/foo", "/bar", "/baz"]
     );
+    assert_eq!(
+        parse_raw_path("/foo:/bar:/foo:/baz:/bar"),
+        vec!["/foo", "/bar", "/foo", "/baz", "/bar"]
+    );
 }
 
 #[test]
