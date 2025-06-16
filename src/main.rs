@@ -275,13 +275,16 @@ fn get_duplicate_dirs(path_str: &str) -> Vec<String> {
 fn files_in_dir(dir: &str) -> Result<BTreeSet<String>> {
     let filename_regex = Regex::new("[^/]+$")?;
     let mut files = BTreeSet::new();
-    for entry in fs::read_dir(Path::new(dir))? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_file() {
-            if let Some(file_path) = path.to_str() {
-                if let Some(cap) = filename_regex.captures(file_path) {
-                    files.insert(cap[0].to_string());
+    let dir_path = Path::new(dir);
+    if dir_path.exists() {
+        for entry in fs::read_dir(dir_path)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(file_path) = path.to_str() {
+                    if let Some(cap) = filename_regex.captures(file_path) {
+                        files.insert(cap[0].to_string());
+                    }
                 }
             }
         }
