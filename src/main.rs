@@ -17,9 +17,14 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use itertools::Itertools;
+use regex::Regex;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{Write, stdout};
 use std::path::Path;
 use std::{env, fs};
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Parser, Default, Clone)]
 #[command(version, about, long_about = None)]
@@ -55,6 +60,8 @@ enum Commands {
     Add { directories: Vec<String> },
     /// Add directories to back of PATH
     Append { directories: Vec<String> },
+    /// Analyze the current PATH
+    Analyze,
 }
 
 fn main() -> Result<()> {
@@ -62,13 +69,15 @@ fn main() -> Result<()> {
 }
 
 fn main_logic(cli: Cli, output: &mut impl Write) -> Result<()> {
-    let current = parse_path(&(env::var(cli.env).unwrap_or_default()));
+    let current_path_str = env::var(cli.env).unwrap_or_default();
+    let current = parse_path(&current_path_str);
     let pretty = cli.pretty || cli.command == Commands::Print;
     let mut path = match cli.command {
         Commands::Print => current,
         Commands::New { directories } => exec_new(directories),
         Commands::Add { directories } => exec_add(&current, directories),
         Commands::Append { directories } => exec_append(&current, directories),
+        Commands::Analyze => exec_analyze(&current_path_str, output)?,
     };
     path = apply_filters(path, cli.filter, cli.normalize);
     if pretty {
@@ -76,6 +85,50 @@ fn main_logic(cli: Cli, output: &mut impl Write) -> Result<()> {
     } else {
         writeln!(output, "{}", to_string(&path)).with_context(|| "Failed to write output")
     }
+}
+
+fn exec_analyze(path_str: &str, output: &mut impl Write) -> Result<Vec<String>> {
+    let invalids = get_invalid_dirs(path_str);
+    writeln!(output, "Invalid Directories:")?;
+    if invalids.is_empty() {
+        writeln!(output, "    None")?;
+    } else {
+        for invalid in invalids {
+            writeln!(output, "    {}", invalid)?;
+        }
+    }
+
+    writeln!(output)?;
+
+    let duplicates = get_duplicate_dirs(path_str);
+    writeln!(output, "Duplicate Directories:")?;
+    if duplicates.is_empty() {
+        writeln!(output, "    None")?;
+    } else {
+        for invalid in duplicates {
+            writeln!(output, "    {}", invalid)?;
+        }
+    }
+
+    writeln!(output)?;
+
+    let shadows = get_shadowed(path_str)?;
+    writeln!(output, "Shadowed Files:")?;
+    if shadows.is_empty() {
+        writeln!(output, "    None")?;
+    } else {
+        for (i, (dir, dir_shadows)) in shadows.iter().enumerate() {
+            if i > 0 {
+                writeln!(output)?;
+            }
+            writeln!(output, "    {}", dir)?;
+            for s in dir_shadows {
+                writeln!(output, "        {}  =>  {}", s.file, s.owner_dir)?;
+            }
+        }
+    }
+
+    Ok(Vec::new())
 }
 
 fn exec_print(current: Vec<String>, output: &mut impl Write) -> Result<()> {
@@ -87,19 +140,13 @@ fn exec_print(current: Vec<String>, output: &mut impl Write) -> Result<()> {
 
 fn exec_new(directories: Vec<String>) -> Vec<String> {
     let mut path = Vec::new();
-    for arg in directories.iter() {
-        let parsed = parse_path(arg);
-        add_all_last(&mut path, &parsed);
-    }
+    parse_and_add_all_last(&mut path, directories);
     path
 }
 
 fn exec_add(current: &[String], directories: Vec<String>) -> Vec<String> {
     let mut path = Vec::new();
-    for arg in directories.iter() {
-        let parsed = parse_path(arg);
-        add_all_last(&mut path, &parsed);
-    }
+    parse_and_add_all_last(&mut path, directories);
     add_all_unique(&mut path, current);
     path
 }
@@ -107,10 +154,7 @@ fn exec_add(current: &[String], directories: Vec<String>) -> Vec<String> {
 fn exec_append(current: &[String], directories: Vec<String>) -> Vec<String> {
     let mut path = Vec::new();
     add_all_unique(&mut path, current);
-    for arg in directories.iter() {
-        let parsed = parse_path(arg);
-        add_all_last(&mut path, &parsed);
-    }
+    parse_and_add_all_last(&mut path, directories);
     path
 }
 
@@ -147,50 +191,47 @@ fn normalize(path: Vec<String>) -> Vec<String> {
         .collect::<Vec<String>>()
 }
 
+fn parse_and_add_all_last(path: &mut Vec<String>, directories: Vec<String>) {
+    directories
+        .iter()
+        .map(|arg| parse_path(arg))
+        .for_each(|dirs| add_all_last(path, &dirs));
+}
+
 fn add_last(path: &mut Vec<String>, dir: &str) {
     remove(path, dir);
     path.push(dir.to_string());
 }
 
 fn add_all_last(path: &mut Vec<String>, other: &[String]) {
-    for dir in other.iter() {
-        add_last(path, dir);
-    }
+    other.iter().for_each(|x| add_last(path, x));
 }
 
 fn add_all_unique(path: &mut Vec<String>, other: &[String]) {
-    for dir in other.iter() {
-        add_unique(path, dir);
-    }
+    other.iter().for_each(|x| add_unique(path, x));
 }
 
 fn add_unique(path: &mut Vec<String>, dir: &str) {
-    if !dir.is_empty() {
-        for p in path.iter() {
-            if p == dir {
-                return;
-            }
-        }
+    if !(dir.is_empty() || path.iter().any(|s| s == dir)) {
         path.push(dir.to_string());
     }
 }
 
 fn parse_path(source: &str) -> Vec<String> {
-    let mut path: Vec<String> = Vec::new();
-    let mut remaining = source;
-    while !remaining.is_empty() {
-        match remaining.find(':') {
-            Some(i) => {
-                add_unique(&mut path, &remaining[..i]);
-                remaining = &remaining[i + 1..];
-            }
-            None => {
-                add_unique(&mut path, remaining);
-                remaining = "";
-            }
-        }
-    }
-    path
+    source
+        .split(":")
+        .filter(|x| !x.is_empty())
+        .map(|x| x.to_string())
+        .unique()
+        .collect()
+}
+
+fn parse_raw_path(source: &str) -> Vec<String> {
+    source
+        .split(":")
+        .filter(|x| !x.is_empty())
+        .map(|x| x.to_string())
+        .collect()
 }
 
 fn to_string(path: &[String]) -> String {
@@ -218,424 +259,74 @@ fn canonicalize(path: &str) -> Result<Option<String>> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::env::set_var;
+fn get_invalid_dirs(path_str: &str) -> Vec<String> {
+    let mut dirs = parse_raw_path(path_str);
+    dirs.retain(|x| !is_valid(x).unwrap_or(false));
+    dirs
+}
 
-    const TEST_ROOT: &str = "test_dirs";
+fn get_duplicate_dirs(path_str: &str) -> Vec<String> {
+    let mut visited = HashSet::new();
+    parse_raw_path(path_str)
+        .iter()
+        .map(|d| (d, visited.insert(d)))
+        .filter(|(_, added)| !added)
+        .map(|(d, _)| d.to_string())
+        .collect()
+}
 
-    fn dir(s: &str) -> String {
-        format!("{}/{}", TEST_ROOT, s)
-    }
-
-    fn err_message(e: anyhow::Error) -> String {
-        format!("{:?}", e)
-    }
-
-    fn normal_dir(s: &str) -> String {
-        let mut prefix = fs::canonicalize(Path::new(TEST_ROOT))
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_string();
-        assert!(prefix.len() > 0);
-        prefix += "/";
-        prefix += s;
-        prefix
-    }
-
-    // Determines the canonical path of TEST_ROOT and then removes
-    // it from the start of the given directory path.
-    // Intended for use in a test so makes assumptions about
-    // unwrap being safe.
-    fn rm_prefix(path: String) -> String {
-        let prefix = normal_dir("");
-        assert!(
-            path.starts_with(prefix.as_str()),
-            "path did not start with {}: {}",
-            prefix,
-            path
-        );
-        path.strip_prefix(prefix.as_str()).unwrap().to_string()
-    }
-
-    // Determines the canonical path of TEST_ROOT and then removes
-    // it from the start of the given directory path.
-    // Intended for use in a test so makes assumptions about
-    // unwrap being safe.
-    fn rm_prefix_opt(dir: Option<String>) -> Option<String> {
-        dir.map(|path| rm_prefix(path))
-    }
-
-    fn strings(strs: &[&str]) -> Vec<String> {
-        strs.iter().map(|s| String::from(*s)).collect()
-    }
-
-    #[test]
-    fn test_remove() {
-        let mut v = strings(&["a", "b", "b"]);
-        let unchanged = v.clone();
-
-        remove(&mut v, "x");
-        assert_eq!(v, unchanged);
-
-        remove(&mut v, "a");
-        assert_eq!(v, strings(&["b", "b"]));
-
-        let mut v = unchanged.clone();
-        remove(&mut v, "b");
-        assert_eq!(v, strings(&["a"]));
-    }
-
-    #[test]
-    fn test_is_valid() {
-        assert_eq!(is_valid(":").map_err(err_message), Ok(false));
-        assert_eq!(is_valid(TEST_ROOT).ok(), Some(true));
-        assert_eq!(is_valid(dir("a").as_str()).ok(), Some(true));
-        assert_eq!(is_valid(dir("b/bb").as_str()).ok(), Some(true));
-        assert_eq!(is_valid(dir("z").as_str()).ok(), Some(false));
-        assert_eq!(is_valid(dir("a/keepme.txt").as_str()).ok(), Some(false));
-        assert_eq!(is_valid(dir("la").as_str()).ok(), Some(true));
-        assert_eq!(is_valid(dir("laa").as_str()).ok(), Some(true));
-        assert_eq!(is_valid(dir("broken").as_str()).ok(), Some(false));
-        assert_eq!(is_valid(dir("broken2").as_str()).ok(), Some(false));
-    }
-
-    #[test]
-    fn test_canonicalize() {
-        assert_eq!(
-            canonicalize(dir("a").as_str())
-                .map_err(err_message)
-                .map(rm_prefix_opt),
-            Ok(Some("a".to_string()))
-        );
-        assert_eq!(
-            canonicalize(dir("b").as_str())
-                .map_err(err_message)
-                .map(rm_prefix_opt),
-            Ok(Some("b".to_string()))
-        );
-        assert_eq!(
-            canonicalize(dir("b/bb").as_str())
-                .map_err(err_message)
-                .map(rm_prefix_opt),
-            Ok(Some("b/bb".to_string()))
-        );
-        assert_eq!(
-            canonicalize(dir("la").as_str())
-                .map_err(err_message)
-                .map(rm_prefix_opt),
-            Ok(Some("a".to_string()))
-        );
-        assert_eq!(
-            canonicalize(dir("laa").as_str())
-                .map_err(err_message)
-                .map(rm_prefix_opt),
-            Ok(Some("a".to_string()))
-        );
-        assert_eq!(
-            canonicalize(dir("broken").as_str()).map_err(err_message),
-            Ok(None)
-        );
-        assert_eq!(
-            canonicalize(dir("broken2").as_str()).map_err(err_message),
-            Ok(None)
-        );
-    }
-
-    #[test]
-    fn test_filter() {
-        assert_eq!(
-            filter(vec![
-                dir("laa"),
-                dir("b/bb"),
-                dir("c"),
-                dir("broken2"),
-                dir("b/bb"),
-                dir("z"),
-                dir("b")
-            ])
-            .into_iter()
-            .collect::<Vec<String>>(),
-            vec![dir("laa"), dir("b/bb"), dir("c"), dir("b")]
-        );
-    }
-
-    #[test]
-    fn test_normalize() {
-        assert_eq!(
-            normalize(vec![dir("a")])
-                .into_iter()
-                .map(rm_prefix)
-                .collect::<Vec<String>>(),
-            vec!["a".to_string()]
-        );
-
-        // should be unique in the normalized path
-        assert_eq!(
-            normalize(vec![dir("a"), dir("la")])
-                .into_iter()
-                .map(rm_prefix)
-                .collect::<Vec<String>>(),
-            vec!["a".to_string()]
-        );
-        assert_eq!(
-            normalize(vec![dir("laa"), dir("a")])
-                .into_iter()
-                .map(rm_prefix)
-                .collect::<Vec<String>>(),
-            vec!["a".to_string()]
-        );
-
-        assert_eq!(
-            normalize(vec![
-                dir("laa"),
-                dir("b/bb"),
-                dir("c"),
-                dir("broken2"),
-                dir("b/bb"),
-                dir("z"),
-                dir("b")
-            ])
-            .into_iter()
-            .map(rm_prefix)
-            .collect::<Vec<String>>(),
-            vec![
-                "a".to_string(),
-                "b/bb".to_string(),
-                "c".to_string(),
-                "b".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_add_unique() {
-        let mut path: Vec<String> = Vec::new();
-
-        add_unique(&mut path, "");
-        assert_eq!(path, Vec::<String>::new());
-
-        add_unique(&mut path, "a");
-        add_unique(&mut path, "b");
-        add_unique(&mut path, "c");
-        assert_eq!(path, vec!["a", "b", "c"]);
-
-        add_unique(&mut path, "c");
-        add_unique(&mut path, "b");
-        add_unique(&mut path, "a");
-        assert_eq!(path, vec!["a", "b", "c"]);
-    }
-
-    #[test]
-    fn test_parse_path() {
-        assert_eq!(parse_path(""), Vec::<String>::new());
-        assert_eq!(parse_path("::"), Vec::<String>::new());
-        assert_eq!(parse_path(":/foo::/bar:"), vec!["/foo", "/bar"]);
-        assert_eq!(parse_path("/foo:/bar:/baz"), vec!["/foo", "/bar", "/baz"]);
-        assert_eq!(
-            parse_path("/foo:/bar:/foo:/baz:/bar"),
-            vec!["/foo", "/bar", "/baz"]
-        );
-    }
-
-    #[test]
-    fn test_print() {
-        let env_var = "TEST_PATH_PRINT".to_string();
-        let base_cli = Cli {
-            env: env_var.to_owned(),
-            command: Commands::Print,
-            ..Cli::default()
-        };
-        let path = vec![dir("b"), dir("c"), dir("z")].join(":");
-        let cli = base_cli.clone();
-        unsafe {
-            set_var(env_var.to_owned(), path);
+fn files_in_dir(dir: &str) -> Result<BTreeSet<String>> {
+    let filename_regex = Regex::new("[^/]+$")?;
+    let mut files = BTreeSet::new();
+    let dir_path = Path::new(dir);
+    if dir_path.exists() {
+        for entry in fs::read_dir(dir_path)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(file_path) = path.to_str() {
+                    if let Some(cap) = filename_regex.captures(file_path) {
+                        files.insert(cap[0].to_string());
+                    }
+                }
+            }
         }
-        let mut buf = Vec::new();
-        main_logic(cli, &mut buf).unwrap();
-        assert_eq!(
-            String::from_utf8(buf).unwrap(),
-            format!("{}\n{}\n{}\n", dir("b"), dir("c"), dir("z"))
-        );
-
-        let cli = Cli {
-            filter: true,
-            ..base_cli.clone()
-        };
-        let mut buf = Vec::new();
-        main_logic(cli, &mut buf).unwrap();
-        assert_eq!(
-            String::from_utf8(buf).unwrap(),
-            format!("{}\n{}\n", dir("b"), dir("c"))
-        );
-
-        let cli = Cli {
-            normalize: true,
-            ..base_cli.clone()
-        };
-        let mut buf = Vec::new();
-        main_logic(cli, &mut buf).unwrap();
-        assert_eq!(
-            String::from_utf8(buf).unwrap(),
-            format!("{}\n{}\n", normal_dir("b"), normal_dir("c"))
-        );
     }
+    Ok(files)
+}
 
-    #[test]
-    fn test_new() {
-        let env_var = "TEST_PATH_NEW".to_string();
-        let base_cli = Cli {
-            env: env_var.to_owned(),
-            command: Commands::New {
-                directories: vec![
-                    dir("la"),
-                    dir("b"),
-                    dir("a"),
-                    dir("c"),
-                    dir("z"),
-                    dir("x"),
-                    dir("b/bb"),
-                ],
-            },
-            ..Cli::default()
-        };
-        let cli = base_cli.clone();
-        let mut buf = Vec::new();
-        main_logic(cli, &mut buf).unwrap();
-        assert_eq!(
-            String::from_utf8(buf).unwrap(),
-            vec![
-                dir("la"),
-                dir("b"),
-                dir("a"),
-                dir("c"),
-                dir("z"),
-                dir("x"),
-                dir("b/bb")
-            ]
-            .join(":")
-                + "\n"
-        );
+/// Holds a directory/file relationship that shadows a file with the
+/// same name for some other directory.
+#[derive(Debug, Clone, PartialEq)]
+struct Shadow {
+    owner_dir: String,
+    file: String,
+}
 
-        let cli = Cli {
-            filter: true,
-            ..base_cli.clone()
-        };
-        let mut buf = Vec::new();
-        main_logic(cli, &mut buf).unwrap();
-        assert_eq!(
-            String::from_utf8(buf).unwrap(),
-            vec![dir("la"), dir("b"), dir("a"), dir("c"), dir("b/bb")].join(":") + "\n"
-        );
-
-        let cli = Cli {
-            normalize: true,
-            ..base_cli.clone()
-        };
-        let mut buf = Vec::new();
-        main_logic(cli, &mut buf).unwrap();
-        assert_eq!(
-            String::from_utf8(buf).unwrap(),
-            vec![
-                normal_dir("a"),
-                normal_dir("b"),
-                normal_dir("c"),
-                normal_dir("b/bb")
-            ]
-            .join(":")
-                + "\n"
-        );
+impl Shadow {
+    fn new(owner_dir: String, file: String) -> Self {
+        Self { owner_dir, file }
     }
+}
 
-    #[test]
-    fn test_add() {
-        let env_var = "TEST_PATH_ADD".to_string();
-        let base_cli = Cli {
-            env: env_var.to_owned(),
-            command: Commands::Add {
-                directories: vec![dir("la"), dir("x")],
-            },
-            ..Cli::default()
-        };
-        let path = vec![dir("b"), dir("a"), dir("c"), dir("z")].join(":");
-        let cli = base_cli.clone();
-        unsafe {
-            set_var(env_var.to_owned(), path);
+fn get_shadowed(path_str: &str) -> Result<Vec<(String, Vec<Shadow>)>> {
+    let mut all_shadowed = Vec::new();
+    let mut file_to_owner_dir: HashMap<String, String> = HashMap::new();
+    for dir in parse_raw_path(path_str) {
+        let mut shadowed = Vec::new();
+        for file in files_in_dir(dir.as_str())? {
+            match file_to_owner_dir.get(file.as_str()) {
+                Some(owner_dir) => {
+                    shadowed.push(Shadow::new(owner_dir.to_string(), file));
+                }
+                None => {
+                    file_to_owner_dir.insert(file, dir.to_string());
+                }
+            }
         }
-        let mut buf = Vec::new();
-        main_logic(cli, &mut buf).unwrap();
-        assert_eq!(
-            String::from_utf8(buf).unwrap(),
-            vec![dir("la"), dir("x"), dir("b"), dir("a"), dir("c"), dir("z")].join(":") + "\n"
-        );
-
-        let cli = Cli {
-            filter: true,
-            ..base_cli.clone()
-        };
-        let mut buf = Vec::new();
-        main_logic(cli, &mut buf).unwrap();
-        assert_eq!(
-            String::from_utf8(buf).unwrap(),
-            vec![dir("la"), dir("b"), dir("a"), dir("c")].join(":") + "\n"
-        );
-
-        let cli = Cli {
-            normalize: true,
-            ..base_cli.clone()
-        };
-        let mut buf = Vec::new();
-        main_logic(cli, &mut buf).unwrap();
-        assert_eq!(
-            String::from_utf8(buf).unwrap(),
-            vec![normal_dir("a"), normal_dir("b"), normal_dir("c")].join(":") + "\n"
-        );
-    }
-
-    #[test]
-    fn test_append() {
-        let env_var = "TEST_PATH_APPEND".to_string();
-        let base_cli = Cli {
-            env: env_var.to_owned(),
-            command: Commands::Append {
-                directories: vec![dir("la"), dir("x")],
-            },
-            ..Cli::default()
-        };
-        let path = vec![dir("b"), dir("a"), dir("c"), dir("z")].join(":");
-        let cli = base_cli.clone();
-        unsafe {
-            set_var(env_var.to_owned(), path);
+        if !shadowed.is_empty() {
+            all_shadowed.push((dir, shadowed));
         }
-        let mut buf = Vec::new();
-        main_logic(cli, &mut buf).unwrap();
-        assert_eq!(
-            String::from_utf8(buf).unwrap(),
-            vec![dir("b"), dir("a"), dir("c"), dir("z"), dir("la"), dir("x")].join(":") + "\n"
-        );
-
-        let cli = Cli {
-            filter: true,
-            ..base_cli.clone()
-        };
-        let mut buf = Vec::new();
-        main_logic(cli, &mut buf).unwrap();
-        assert_eq!(
-            String::from_utf8(buf).unwrap(),
-            vec![dir("b"), dir("a"), dir("c"), dir("la")].join(":") + "\n"
-        );
-
-        let cli = Cli {
-            normalize: true,
-            ..base_cli.clone()
-        };
-        let mut buf = Vec::new();
-        main_logic(cli, &mut buf).unwrap();
-        assert_eq!(
-            String::from_utf8(buf).unwrap(),
-            vec![normal_dir("b"), normal_dir("a"), normal_dir("c")].join(":") + "\n"
-        );
     }
+    Ok(all_shadowed)
 }
