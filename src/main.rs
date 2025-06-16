@@ -120,7 +120,7 @@ fn exec_analyze(path_str: &str, output: &mut impl Write) -> Result<Vec<String>> 
         for (dir, dir_shadows) in shadows {
             writeln!(output, "    {}", dir)?;
             for s in dir_shadows {
-                writeln!(output, "        {}  =>  {}", s.file, s.dir)?;
+                writeln!(output, "        {}  =>  {}", s.file, s.owner_dir)?;
             }
         }
     }
@@ -289,35 +289,38 @@ fn files_in_dir(dir: &str) -> Result<BTreeSet<String>> {
     Ok(files)
 }
 
+/// Holds a directory/file relationship that shadows a file with the
+/// same name for some other directory.
 #[derive(Debug, Clone)]
 struct Shadow {
-    dir: String,
+    owner_dir: String,
     file: String,
 }
 
 impl Shadow {
-    fn new(dir: String, file: String) -> Self {
-        Self { dir, file }
+    fn new(owner_dir: String, file: String) -> Self {
+        Self { owner_dir, file }
     }
 }
 
 fn get_shadowed(path_str: &str) -> Result<Vec<(String, Vec<Shadow>)>> {
-    let mut answer = Vec::new();
-    let mut shadows: HashMap<String, Shadow> = HashMap::new();
+    let mut all_shadowed = Vec::new();
+    let mut file_to_owner_dir: HashMap<String, String> = HashMap::new();
     for dir in parse_raw_path(path_str) {
         let mut shadowed = Vec::new();
         for file in files_in_dir(dir.as_str())? {
-            match shadows.get(file.as_str()) {
-                Some(shadow) => shadowed.push(shadow.clone()),
+            match file_to_owner_dir.get(file.as_str()) {
+                Some(owner_dir) => {
+                    shadowed.push(Shadow::new(owner_dir.to_string(), file));
+                }
                 None => {
-                    let shadow = Shadow::new(dir.to_owned(), file.clone());
-                    shadows.insert(file, shadow);
+                    file_to_owner_dir.insert(file, dir.to_string());
                 }
             }
         }
         if !shadowed.is_empty() {
-            answer.push((dir, shadowed));
+            all_shadowed.push((dir, shadowed));
         }
     }
-    Ok(answer)
+    Ok(all_shadowed)
 }
