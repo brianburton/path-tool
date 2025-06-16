@@ -117,7 +117,10 @@ fn exec_analyze(path_str: &str, output: &mut impl Write) -> Result<Vec<String>> 
     if shadows.is_empty() {
         writeln!(output, "    None")?;
     } else {
-        for (dir, dir_shadows) in shadows {
+        for (i, (dir, dir_shadows)) in shadows.iter().enumerate() {
+            if i > 0 {
+                writeln!(output)?;
+            }
             writeln!(output, "    {}", dir)?;
             for s in dir_shadows {
                 writeln!(output, "        {}  =>  {}", s.file, s.owner_dir)?;
