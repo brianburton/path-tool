@@ -297,7 +297,7 @@ fn files_in_dir(dir: &str) -> Result<BTreeSet<String>> {
 
 /// Holds a directory/file relationship that shadows a file with the
 /// same name for some other directory.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct Shadow {
     owner_dir: String,
     file: String,

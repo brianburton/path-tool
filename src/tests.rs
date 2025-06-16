@@ -436,3 +436,50 @@ fn test_append() {
         vec![normal_dir("b"), normal_dir("a"), normal_dir("c")].join(":") + "\n"
     );
 }
+
+#[test]
+fn test_get_invalid_dirs() {
+    let path = vec![dir("laa"), dir("broken"), dir("a"), dir("c"), dir("z")].join(":");
+    assert_eq!(
+        get_invalid_dirs(path.as_str()),
+        vec!(dir("broken"), dir("z"))
+    );
+}
+
+#[test]
+fn test_get_duplicate_dirs() {
+    let path = vec![
+        dir("laa"),
+        dir("broken"),
+        dir("a"),
+        dir("c"),
+        dir("laa"),
+        dir("a"),
+    ]
+    .join(":");
+    assert_eq!(
+        get_duplicate_dirs(path.as_str()),
+        vec!(dir("laa"), dir("a"))
+    );
+}
+
+#[test]
+fn test_get_shadowed() {
+    let path = vec![dir("a"), dir("b"), dir("c")].join(":");
+    assert_eq!(
+        get_shadowed(path.as_str()).unwrap(),
+        vec![
+            (
+                dir("b"),
+                vec![Shadow::new(dir("a"), "keepme.txt".to_string()),]
+            ),
+            (
+                dir("c"),
+                vec![
+                    Shadow::new(dir("a"), "keepme.txt".to_string()),
+                    Shadow::new(dir("b"), "x".to_string()),
+                ]
+            ),
+        ]
+    );
+}
